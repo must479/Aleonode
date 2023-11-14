@@ -40,7 +40,9 @@ members = [
 ]
 
 [workspace.dependencies.snarkvm]
-version = "=0.16.9"
+git = "https://github.com/aleoHQ/snarkVM.git"
+branch = "fix/test-deploy-overload"
+#version = "=0.16.9"
 features = [ "circuit", "console", "rocks" ]
 
 [[bin]]
