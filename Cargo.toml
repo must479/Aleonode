@@ -43,7 +43,7 @@ members = [
 git = "https://github.com/aleoHQ/snarkVM.git"
 branch = "fix/test-deploy-overload"
 #version = "=0.16.9"
-features = [ "circuit", "console", "rocks" ]
+features = [ "circuit", "console", "rocks", "timer"]
 
 [[bin]]
 name = "snarkos"
