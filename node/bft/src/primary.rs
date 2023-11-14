@@ -1113,7 +1113,11 @@ impl<N: Network> Primary<N> {
     async fn check_proposed_batch_for_expiration(&self) -> Result<()> {
         // Check if the proposed batch is timed out or stale.
         let is_expired = match self.proposed_batch.read().as_ref() {
-            Some(proposal) => proposal.round() < self.current_round(),
+            Some(proposal) => {
+                println!("proposal.round(): {}", proposal.round());
+                println!("self.current_round(): {}", self.current_round());
+                proposal.round() < self.current_round()
+            },
             None => false,
         };
         // If the batch is expired, clear the proposed batch.
