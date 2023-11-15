@@ -24,11 +24,11 @@ use snarkos_node_bft_ledger_service::LedgerService;
 use snarkos_node_sync::{locators::BlockLocators, BlockSync, BlockSyncMode};
 use snarkvm::{
     console::{network::Network, types::Field},
-    ledger::{authority::Authority, block::Block, narwhal::BatchCertificate},
+    ledger::{authority::Authority, block::Block, narwhal::BatchCertificate}, prelude::Address,
 };
 
 use anyhow::{bail, Result};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::{future::Future, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{oneshot, Mutex as TMutex, OnceCell},
@@ -55,6 +55,8 @@ pub struct Sync<N: Network> {
     lock: Arc<TMutex<()>>,
     /// Whether we are in dev mode
     dev: Option<u16>,
+    /// Last round in which we were the leader
+    pub last_leader_round: Arc<RwLock<u64>>,
 }
 
 impl<N: Network> Sync<N> {
@@ -73,6 +75,7 @@ impl<N: Network> Sync<N> {
             handles: Default::default(),
             lock: Default::default(),
             dev,
+            last_leader_round: Arc::new(RwLock::new(0u64)),
         }
     }
 
@@ -315,8 +318,7 @@ impl<N: Network> Sync<N> {
 
     /// Returns `true` if the node is in gateway mode.
     pub const fn is_gateway_mode(&self) -> bool {
-        false
-        // self.block_sync.mode().is_gateway()
+        self.block_sync.mode().is_gateway()
     }
 
     /// Returns the current block locators of the node.
@@ -355,24 +357,29 @@ impl<N: Network> Sync<N> {
     fn send_certificate_response(&self, peer_ip: SocketAddr, request: CertificateRequest<N>) {
         // Attempt to retrieve the certificate.
         if let Some(certificate) = self.storage.get_certificate(request.certificate_id) {
-            if let Some(dev) = self.dev {
-                if  dev != 1 || 
-                    self.ledger.current_committee().unwrap().get_leader(certificate.round()).unwrap() != self.gateway.account().address()
-                {
+            let peer_id = peer_ip.port().to_string().chars().last().unwrap();
+            // NOTE: if we change the committee sizes, we may need get_committee_for_round(certificate.round())
+            let is_leader = self.ledger.current_committee().unwrap().get_leader(certificate.round()).unwrap() == self.gateway.account().address();
+            if is_leader && certificate.round() > *self.last_leader_round.read() {
+                *self.last_leader_round.write() = certificate.round();
+            }
+            let last_leader_round = *self.last_leader_round.read();
+            let retired_from_leadership = last_leader_round == 0 || (certificate.round() > last_leader_round + 2);
+            let self_ = self.clone();
+            let sending_own_cert = certificate.author() == self.gateway.account().address();
+
+            // NOTE: if we withhold certificates from other nodes, they can't progress: Unable to fetch batch certificate
+            match (self.dev, retired_from_leadership, is_leader, peer_id, sending_own_cert) {
+                (Some(1), _, _, '3', _) => { // validator 1 never sends to validator 3
+                    info!("\n\nSKIPPING SENDING CERTIFICATE RESPONSE FOR ROUND {}, AUTHOR {} AND PEER {} \n\n", certificate.round(), certificate.author(), peer_ip);
+                }
+                _ => {
+                    info!("\n\nSENDING CERT ROUND {}, AUTHOR {} AND PEER {} \n\n", certificate.round(), certificate.author(), peer_ip);
                     // Send the certificate response to the peer.
-                    let self_ = self.clone();
                     tokio::spawn(async move {
                         let _ = self_.gateway.send(peer_ip, Event::CertificateResponse(certificate.into())).await;
                     });
-                } else {
-                    println!("\n\nSKIPPING SENDING CERTIFICATE RESPONSE FOR ROUND {}\n\n", certificate.round());
                 }
-            } else {
-                // Send the certificate response to the peer.
-                let self_ = self.clone();
-                tokio::spawn(async move {
-                    let _ = self_.gateway.send(peer_ip, Event::CertificateResponse(certificate.into())).await;
-                });
             }
         }
     }

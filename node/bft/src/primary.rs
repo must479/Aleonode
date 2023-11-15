@@ -70,6 +70,7 @@ use tokio::{
     sync::{Mutex as TMutex, OnceCell},
     task::JoinHandle,
 };
+use indexmap::IndexSet;
 
 /// A helper type for an optional proposed batch.
 pub type ProposedBatch<N> = RwLock<Option<Proposal<N>>>;
@@ -496,6 +497,19 @@ impl<N: Network> Primary<N> {
     async fn process_batch_propose_from_peer(&self, peer_ip: SocketAddr, batch_propose: BatchPropose<N>) -> Result<()> {
         let BatchPropose { round: batch_round, batch_header } = batch_propose;
 
+        // This halts the network. But this might break the byzantine assumption
+        // let all_peer_ids = HashSet::from(['0', '1', '2', '3']);
+        // let connected_ids = self.gateway.connected_peers.read().iter().map(|p| {
+        //     p.port().to_string().chars().last().unwrap()
+        // }).collect();
+        // let peer_id = peer_ip.port().to_string().chars().last().unwrap();
+        // let self_id = all_peer_ids.difference(&connected_ids).into_iter().collect_vec()[0];
+        // Do not sign batches from validator 0 if we are validator 2, to mimick network irregularities
+        // if peer_id == '0' && *self_id == '2' {
+        //     info!("\n\nSKIPPING SIGNING BATCH FOR ROUND {} and peer {}\n\n", batch_round, peer_id);
+        //     return Ok(());
+        // }
+
         // Deserialize the batch header.
         let batch_header = spawn_blocking!(batch_header.deserialize_blocking())?;
         // Ensure the round matches in the batch header.
@@ -823,86 +837,86 @@ impl<N: Network> Primary<N> {
         } = primary_receiver;
 
         // Start the primary ping. Broadcasting certificates.
-        if self.sync.is_gateway_mode() {
-            let self_ = self.clone();
-            self.spawn(async move {
-                loop {
-                    // Sleep briefly.
-                    tokio::time::sleep(Duration::from_millis(PRIMARY_PING_IN_MS)).await;
+        // if self.sync.is_gateway_mode() {
+        //     let self_ = self.clone();
+        //     self.spawn(async move {
+        //         loop {
+        //             // Sleep briefly.
+        //             tokio::time::sleep(Duration::from_millis(PRIMARY_PING_IN_MS)).await;
 
-                    // Retrieve the block locators.
-                    let block_locators = match self_.sync.get_block_locators() {
-                        Ok(block_locators) => block_locators,
-                        Err(e) => {
-                            warn!("Failed to retrieve block locators - {e}");
-                            continue;
-                        }
-                    };
+        //             // Retrieve the block locators.
+        //             let block_locators = match self_.sync.get_block_locators() {
+        //                 Ok(block_locators) => block_locators,
+        //                 Err(e) => {
+        //                     warn!("Failed to retrieve block locators - {e}");
+        //                     continue;
+        //                 }
+        //             };
 
-                    // Retrieve the latest certificate of the primary.
-                    let primary_certificate = {
-                        // Retrieve the primary address.
-                        let primary_address = self_.gateway.account().address();
+        //             // Retrieve the latest certificate of the primary.
+        //             let primary_certificate = {
+        //                 // Retrieve the primary address.
+        //                 let primary_address = self_.gateway.account().address();
 
-                        // Iterate backwards from the latest round to find the primary certificate.
-                        let mut certificate = None;
-                        let mut current_round = self_.current_round();
-                        while certificate.is_none() {
-                            // If the current round is 0, then break the while loop.
-                            if current_round == 0 {
-                                break;
-                            }
-                            // Retrieve the certificates.
-                            let certificates = self_.storage.get_certificates_for_round(current_round);
-                            // Retrieve the primary certificate.
-                            certificate =
-                                certificates.into_iter().find(|certificate| certificate.author() == primary_address);
-                            // If the primary certificate was not found, decrement the round.
-                            if certificate.is_none() {
-                                current_round = current_round.saturating_sub(1);
-                            }
-                        }
+        //                 // Iterate backwards from the latest round to find the primary certificate.
+        //                 let mut certificate = None;
+        //                 let mut current_round = self_.current_round();
+        //                 while certificate.is_none() {
+        //                     // If the current round is 0, then break the while loop.
+        //                     if current_round == 0 {
+        //                         break;
+        //                     }
+        //                     // Retrieve the certificates.
+        //                     let certificates = self_.storage.get_certificates_for_round(current_round);
+        //                     // Retrieve the primary certificate.
+        //                     certificate =
+        //                         certificates.into_iter().find(|certificate| certificate.author() == primary_address);
+        //                     // If the primary certificate was not found, decrement the round.
+        //                     if certificate.is_none() {
+        //                         current_round = current_round.saturating_sub(1);
+        //                     }
+        //                 }
 
-                        // Determine if the primary certificate was found.
-                        match certificate {
-                            Some(certificate) => certificate,
-                            // Skip this iteration of the loop (do not send a primary ping).
-                            None => continue,
-                        }
-                    };
+        //                 // Determine if the primary certificate was found.
+        //                 match certificate {
+        //                     Some(certificate) => certificate,
+        //                     // Skip this iteration of the loop (do not send a primary ping).
+        //                     None => continue,
+        //                 }
+        //             };
 
-                    // Retrieve the batch certificates.
-                    let batch_certificates = {
-                        // Retrieve the current round.
-                        let current_round = self_.current_round();
-                        // Retrieve the batch certificates for the current round.
-                        let mut current_certificates = self_.storage.get_certificates_for_round(current_round);
-                        // If there are no batch certificates for the current round,
-                        // then retrieve the batch certificates for the previous round.
-                        if current_certificates.is_empty() {
-                            // Retrieve the previous round.
-                            let previous_round = current_round.saturating_sub(1);
-                            // Retrieve the batch certificates for the previous round.
-                            current_certificates = self_.storage.get_certificates_for_round(previous_round);
-                        }
-                        current_certificates
-                    };
+        //             // Retrieve the batch certificates.
+        //             let batch_certificates = {
+        //                 // Retrieve the current round.
+        //                 let current_round = self_.current_round();
+        //                 // Retrieve the batch certificates for the current round.
+        //                 let mut current_certificates = self_.storage.get_certificates_for_round(current_round);
+        //                 // If there are no batch certificates for the current round,
+        //                 // then retrieve the batch certificates for the previous round.
+        //                 if current_certificates.is_empty() {
+        //                     // Retrieve the previous round.
+        //                     let previous_round = current_round.saturating_sub(1);
+        //                     // Retrieve the batch certificates for the previous round.
+        //                     current_certificates = self_.storage.get_certificates_for_round(previous_round);
+        //                 }
+        //                 current_certificates
+        //             };
 
-                    // Construct the primary ping.
-                    let primary_ping = PrimaryPing::from((
-                        <Event<N>>::VERSION,
-                        block_locators,
-                        primary_certificate,
-                        batch_certificates,
-                    ));
-                    if let Some(dev) = dev {
-                        if dev != 1 {
-                            self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
-                        }
-                    }
-                }
-            });
-        }
+        //             // Construct the primary ping.
+        //             let primary_ping = PrimaryPing::from((
+        //                 <Event<N>>::VERSION,
+        //                 block_locators,
+        //                 primary_certificate,
+        //                 batch_certificates,
+        //             ));
+        //             if let Some(dev) = dev {
+        //                 if dev != 1 {
+        //                     self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
+        //                 }
+        //             }
+        //         }
+        //     });
+        // }
 
         // Start the primary ping handler.
         let self_ = self.clone();
@@ -1158,9 +1172,7 @@ impl<N: Network> Primary<N> {
                         return Err(e);
                     }
                 }
-            }
-            // Otherwise, handle the Narwhal case.
-            else {
+            } else { // Otherwise, handle the Narwhal case.
                 // Update to the next round in storage.
                 self.storage.increment_to_next_round(current_round)?;
                 // Set 'is_ready' to 'true'.
@@ -1260,15 +1272,35 @@ impl<N: Network> Primary<N> {
                 return Err(e);
             };
         }
-        if let Some(dev) = self.dev {
-            if dev != 1 || committee.get_leader(certificate.round())? != self.gateway.account().address() {
-                // Broadcast the certified batch to all validators.
-                self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
-            } else {
-                println!("\n\nSKIPPING SENDING CERTIFIED BATCH FOR ROUND {}\n\n", certificate.round());
+        let connected_peers = self.gateway.connected_peers.read().clone();
+        let is_leader = committee.get_leader(certificate.round())? == self.gateway.account().address();
+        if is_leader && certificate.round() > *self.sync.last_leader_round.read() {
+            *self.sync.last_leader_round.write() = certificate.round();
+        }
+        let last_leader_round = *self.sync.last_leader_round.read();
+        let retired_from_leadership = last_leader_round == 0 || (certificate.round() > last_leader_round + 2);
+        for peer in connected_peers {
+            let peer_id = peer.port().to_string().chars().last().unwrap();
+            let certificate = certificate.clone();
+            let self_ = self.clone();
+            match (self.dev, retired_from_leadership, is_leader, peer_id) {
+                (Some(1), _, true, '0') => { // If Validator 1 is the leader, they send to validator 0
+                    tokio::spawn(async move {
+                        self_.gateway.send(peer, Event::BatchCertified(certificate.into())).await;
+                    });
+                },
+                (Some(1), false, _, _) => { // If Validator 1 was recently a leader, withhold certs
+                    info!("\n\nSKIPPING SENDING CERTIFIED BATCH FOR ROUND {} and peer {}\n\n", certificate.round(), peer_id);
+                },
+                (Some(1), true, _, '3') => { // Validator 1 still withholds from validator 3 afterwards
+                    info!("\n\nSKIPPING SENDING CERTIFIED BATCH FOR ROUND {} and peer {}\n\n", certificate.round(), peer_id);
+                },
+                _ => {
+                    tokio::spawn(async move {
+                        self_.gateway.send(peer, Event::BatchCertified(certificate.into())).await;
+                    });
+                }
             }
-        } else {
-            self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
         }
         // Log the certified batch.
         let num_transmissions = certificate.transmission_ids().len();
