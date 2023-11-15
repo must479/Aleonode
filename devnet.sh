@@ -8,9 +8,9 @@ total_validators=${total_validators:-4}
 read -p "Do you want to run 'cargo install --path .' to build the binary? (y/n, default: y): " build_binary
 build_binary=${build_binary:-y}
 
-# Ask the user whether to clear the existing ledger logs
-read -p "Do you want to clear the existing ledger logs? (y/n, default: n): " clear_logs
-clear_logs=${clear_logs:-n}
+# Ask the user whether to clear the existing ledgers and logs
+read -p "Do you want to clear the existing ledgers and logs? (y/n, default: n): " clear_ledgers_logs
+clear_logs=${clear_ledgers_logs:-n}
 
 if [[ $build_binary == "y" ]]; then
   # Build the binary using 'cargo install --path .'
@@ -18,7 +18,7 @@ if [[ $build_binary == "y" ]]; then
 fi
 
 # Clear the ledger logs for each validator if the user chooses to clear logs
-if [[ $clear_logs == "y" ]]; then
+if [[ $clear_ledgers_logs == "y" ]]; then
   # Create an array to store background processes
   clean_processes=()
 
