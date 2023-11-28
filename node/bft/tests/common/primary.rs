@@ -180,7 +180,7 @@ impl TestNetwork {
     }
 
     // Starts each node in the network.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self, dev: Option<u16>) {
         for validator in self.validators.values_mut() {
             let (primary_sender, primary_receiver) = init_primary_channels();
             validator.primary_sender = Some(primary_sender.clone());
@@ -191,10 +191,10 @@ impl TestNetwork {
 
             if let Some(bft) = validator.bft.get_mut() {
                 // Setup the channels and start the bft.
-                bft.run(None, primary_sender, primary_receiver).await.unwrap();
+                bft.run(None, primary_sender, primary_receiver, dev).await.unwrap();
             } else {
                 // Setup the channels and start the primary.
-                validator.primary.run(None, primary_sender, primary_receiver).await.unwrap();
+                validator.primary.run(None, primary_sender, primary_receiver, dev).await.unwrap();
             }
 
             if let Some(interval_ms) = self.config.fire_transmissions {

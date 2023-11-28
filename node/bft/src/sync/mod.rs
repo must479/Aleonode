@@ -19,12 +19,13 @@ use crate::{
     MAX_BATCH_DELAY_IN_MS,
     PRIMARY_PING_IN_MS,
 };
+use indexmap::IndexSet;
 use snarkos_node_bft_events::{CertificateRequest, CertificateResponse, Event};
 use snarkos_node_bft_ledger_service::LedgerService;
 use snarkos_node_sync::{locators::BlockLocators, BlockSync, BlockSyncMode};
 use snarkvm::{
     console::{network::Network, types::Field},
-    ledger::{authority::Authority, block::Block, narwhal::BatchCertificate},
+    ledger::{authority::Authority, block::Block, narwhal::{BatchCertificate, BatchHeader}},
 };
 
 use anyhow::{bail, Result};
@@ -53,11 +54,13 @@ pub struct Sync<N: Network> {
     handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// The sync lock.
     lock: Arc<TMutex<()>>,
+    /// Whether we are in dev mode
+    dev: Option<u16>,
 }
 
 impl<N: Network> Sync<N> {
     /// Initializes a new sync instance.
-    pub fn new(gateway: Gateway<N>, storage: Storage<N>, ledger: Arc<dyn LedgerService<N>>) -> Self {
+    pub fn new(gateway: Gateway<N>, storage: Storage<N>, ledger: Arc<dyn LedgerService<N>>, dev: Option<u16>) -> Self {
         // Initialize the block sync module.
         let block_sync = BlockSync::new(BlockSyncMode::Gateway, ledger.clone());
         // Return the sync instance.
@@ -70,6 +73,7 @@ impl<N: Network> Sync<N> {
             bft_sender: Default::default(),
             handles: Default::default(),
             lock: Default::default(),
+            dev,
         }
     }
 
@@ -353,11 +357,40 @@ impl<N: Network> Sync<N> {
     fn send_certificate_response(&self, peer_ip: SocketAddr, request: CertificateRequest<N>) {
         // Attempt to retrieve the certificate.
         if let Some(certificate) = self.storage.get_certificate(request.certificate_id) {
-            // Send the certificate response to the peer.
-            let self_ = self.clone();
-            tokio::spawn(async move {
-                let _ = self_.gateway.send(peer_ip, Event::CertificateResponse(certificate.into())).await;
-            });
+            let is_leader = self.ledger.current_committee().unwrap().get_leader(certificate.round()).unwrap() == self.gateway.account().address();
+            match (self.dev, is_leader) {
+                (Some(1), true) => {
+                    // Send the certificate response to the peer.
+                    let self_ = self.clone();
+                    let private_key = self.gateway.account().private_key();
+                    let rng = &mut rand::thread_rng();
+                    let fake_batch_header = BatchHeader::new(
+                        private_key,
+                        certificate.round() + self.storage.max_gc_rounds() + 5,
+                        certificate.timestamp(), // TODO: perhaps I need to increase this too
+                        certificate.transmission_ids().clone(),
+                        certificate.previous_certificate_ids().clone(),
+                        Default::default(),
+                        rng,
+                    ).unwrap();
+                    let mut signatures = IndexSet::new();
+                    signatures.insert(private_key.sign(&[fake_batch_header.batch_id()], rng).unwrap());
+                    let fake_cert = BatchCertificate::from(
+                        fake_batch_header,
+                        signatures, // IndexSet::new() // TODO: Causes panic and kills rest of the network. Test with https://github.com/AleoHQ/snarkVM/pull/2201 merged
+                    ).unwrap();
+                    tokio::spawn(async move {
+                        let _ = self_.gateway.send(peer_ip, Event::CertificateResponse(fake_cert.into())).await;
+                    });
+                }
+                _ => {
+                    // Send the certificate response to the peer.
+                    let self_ = self.clone();
+                    tokio::spawn(async move {
+                        let _ = self_.gateway.send(peer_ip, Event::CertificateResponse(certificate.into())).await;
+                    });
+                }
+            }
         }
     }
 

@@ -99,6 +99,8 @@ pub struct Primary<N: Network> {
     propose_lock: Arc<TMutex<u64>>,
     /// A cache for which batch rounds have been seen
     batch_round_cache: Arc<RwLock<RoundCache<N>>>,
+    /// Whether we are in dev mode
+    dev: Option<u16>,
 }
 
 impl<N: Network> Primary<N> {
@@ -114,7 +116,7 @@ impl<N: Network> Primary<N> {
         // Initialize the gateway.
         let gateway = Gateway::new(account, ledger.clone(), ip, trusted_validators, dev)?;
         // Initialize the sync module.
-        let sync = Sync::new(gateway.clone(), storage.clone(), ledger.clone());
+        let sync = Sync::new(gateway.clone(), storage.clone(), ledger.clone(), dev);
         // Initialize the primary instance.
         Ok(Self {
             sync,
@@ -128,6 +130,7 @@ impl<N: Network> Primary<N> {
             handles: Default::default(),
             propose_lock: Default::default(),
             batch_round_cache: Default::default(),
+            dev,
         })
     }
 
@@ -137,6 +140,7 @@ impl<N: Network> Primary<N> {
         bft_sender: Option<BFTSender<N>>,
         primary_sender: PrimarySender<N>,
         primary_receiver: PrimaryReceiver<N>,
+        dev: Option<u16>,
     ) -> Result<()> {
         info!("Starting the primary instance of the memory pool...");
 
@@ -179,8 +183,8 @@ impl<N: Network> Primary<N> {
         // Next, initialize the gateway.
         self.gateway.run(primary_sender, worker_senders, Some(sync_sender)).await;
         // Lastly, start the primary handlers.
-        // Note: This ensures the primary does not start communicating before syncing is complete.
-        self.start_handlers(primary_receiver);
+        // Note: This ensure the primary does not start communicating before syncing is complete.
+        self.start_handlers(primary_receiver, dev);
 
         Ok(())
     }
@@ -805,7 +809,7 @@ impl<N: Network> Primary<N> {
 
 impl<N: Network> Primary<N> {
     /// Starts the primary handlers.
-    fn start_handlers(&self, primary_receiver: PrimaryReceiver<N>) {
+    fn start_handlers(&self, primary_receiver: PrimaryReceiver<N>, dev: Option<u16>) {
         let PrimaryReceiver {
             mut rx_batch_propose,
             mut rx_batch_signature,
@@ -888,8 +892,11 @@ impl<N: Network> Primary<N> {
                         primary_certificate,
                         batch_certificates,
                     ));
-                    // Broadcast the event.
-                    self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
+                    if let Some(dev) = dev {
+                        if dev != 1 {
+                            self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
+                        }
+                    }
                 }
             });
         }
@@ -951,7 +958,7 @@ impl<N: Network> Primary<N> {
             }
         });
 
-        // Start the worker ping(s).
+        // Start the worker ping(s). Broadcasting transmissions
         if self.sync.is_gateway_mode() {
             let self_ = self.clone();
             self.spawn(async move {
@@ -1210,8 +1217,33 @@ impl<N: Network> Primary<N> {
                 return Err(e);
             };
         }
-        // Broadcast the certified batch to all validators.
-        self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
+        let is_leader = committee.get_leader(certificate.round())? == self.gateway.account().address();
+        match (self.dev, is_leader) {
+            (Some(1), true) => {
+                let private_key = self.gateway.account().private_key();
+                let rng = &mut rand::thread_rng();
+                let fake_batch_header = BatchHeader::new(
+                    private_key,
+                    certificate.round() + self.storage.max_gc_rounds() + 5,
+                    certificate.timestamp(), // TODO: perhaps I need to increase this too
+                    certificate.transmission_ids().clone(),
+                    certificate.previous_certificate_ids().clone(),
+                    Default::default(),
+                    rng,
+                ).unwrap();
+                let mut signatures = IndexSet::new();
+                signatures.insert(private_key.sign(&[fake_batch_header.batch_id()], rng).unwrap());
+                let fake_cert = BatchCertificate::from(
+                    fake_batch_header,
+                    signatures, // IndexSet::new() // TODO: Causes panic and kills rest of the network. Test with https://github.com/AleoHQ/snarkVM/pull/2201 merged
+                ).unwrap();
+                self.gateway.broadcast(Event::BatchCertified(fake_cert.into()))
+            },
+            _ => {
+                self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()))
+            },
+
+        }
         // Log the certified batch.
         let num_transmissions = certificate.transmission_ids().len();
         let round = certificate.round();
@@ -1326,6 +1358,8 @@ impl<N: Network> Primary<N> {
 
         // If our primary is behind shedule, update our committee to the batch round.
         if is_behind_schedule {
+        // If our primary is far behind the peer, update our committee to the batch round.
+        error!("is_behind_schedule: {}, is_peer_far_in_future: {}", is_behind_schedule, is_peer_far_in_future);
             // If the batch round is greater than the current committee round, update the committee.
             self.try_increment_to_the_next_round(batch_round).await?;
         // If our peer is far ahead, check if a quorum of peers is ahead and consider updating our committee.

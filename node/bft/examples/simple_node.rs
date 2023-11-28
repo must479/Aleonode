@@ -131,7 +131,7 @@ pub async fn start_bft(
     // Initialize the BFT instance.
     let mut bft = BFT::<CurrentNetwork>::new(account, storage, ledger, ip, &trusted_validators, dev)?;
     // Run the BFT instance.
-    bft.run(Some(consensus_sender), sender.clone(), receiver).await?;
+    bft.run(Some(consensus_sender), sender.clone(), receiver, dev).await?;
     // Retrieve the BFT's primary.
     let primary = bft.primary();
     // Handle OS signals.
@@ -164,7 +164,7 @@ pub async fn start_primary(
     // Initialize the primary instance.
     let mut primary = Primary::<CurrentNetwork>::new(account, storage, ledger, ip, &trusted_validators, dev)?;
     // Run the primary instance.
-    primary.run(None, sender.clone(), receiver).await?;
+    primary.run(None, sender.clone(), receiver, dev).await?;
     // Handle OS signals.
     handle_signals(&primary);
     // Return the primary instance.
