@@ -22,12 +22,15 @@ use snarkvm::{
         committee::Committee,
         narwhal::{BatchCertificate, BatchHeader, Transmission, TransmissionID},
     },
-    prelude::{bail, ensure, Itertools, Result},
+    prelude::{bail, ensure, error, Itertools, Result}, utilities::{ToBytesSerializer, FromBytesDeserializer, DeserializeExt, FromBytes, ToBytes},
 };
+use snarkvm::prelude::SerializeStruct;
 
 use indexmap::{IndexMap, IndexSet};
-use std::collections::HashSet;
+use std::{collections::HashSet, io::{Write, Read, Result as IoResult}, fmt::{Display, Formatter}, str::FromStr};
+use std::io::Error;
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Proposal<N: Network> {
     /// The proposed batch header.
     batch_header: BatchHeader<N>,

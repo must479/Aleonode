@@ -108,7 +108,7 @@ impl<N: Network, C: ConsensusStorage<N>> Validator<N, C> {
         // Initialize the primary channels.
         let (primary_sender, primary_receiver) = init_primary_channels::<N>();
         // Start the consensus.
-        consensus.run(primary_sender, primary_receiver).await?;
+        consensus.run(primary_sender, primary_receiver, dev).await?;
 
         // Initialize the node router.
         let router = Router::new(
@@ -132,7 +132,7 @@ impl<N: Network, C: ConsensusStorage<N>> Validator<N, C> {
             shutdown: Default::default(),
         };
         // Initialize the transaction pool.
-        node.initialize_transaction_pool(dev)?;
+        node.initialize_transaction_pool(dev)?; // Start creating transactions
 
         // Initialize the REST server.
         if let Some(rest_ip) = rest_ip {

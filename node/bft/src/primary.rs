@@ -39,7 +39,7 @@ use crate::{
     WORKER_PING_IN_MS,
 };
 use snarkos_account::Account;
-use snarkos_node_bft_events::PrimaryPing;
+use snarkos_node_bft_events::{PrimaryPing, CertificateResponse, BlockRequest, CertificateRequest};
 use snarkos_node_bft_ledger_service::LedgerService;
 use snarkvm::{
     console::{
@@ -63,8 +63,8 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     net::SocketAddr,
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, atomic::AtomicBool},
+    time::{Duration, Instant},
 };
 use tokio::{
     sync::{Mutex as TMutex, OnceCell},
@@ -96,6 +96,8 @@ pub struct Primary<N: Network> {
     handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// The lock for propose_batch.
     propose_lock: Arc<TMutex<u64>>,
+    /// Whether we are in dev mode
+    dev: Option<u16>,
 }
 
 impl<N: Network> Primary<N> {
@@ -109,9 +111,9 @@ impl<N: Network> Primary<N> {
         dev: Option<u16>,
     ) -> Result<Self> {
         // Initialize the gateway.
-        let gateway = Gateway::new(account, ledger.clone(), ip, trusted_validators, dev)?;
+        let gateway = Gateway::new(account, ledger.clone(), ip, trusted_validators, dev.clone())?;
         // Initialize the sync module.
-        let sync = Sync::new(gateway.clone(), storage.clone(), ledger.clone());
+        let sync = Sync::new(gateway.clone(), storage.clone(), ledger.clone(), dev.clone());
         // Initialize the primary instance.
         Ok(Self {
             sync,
@@ -124,6 +126,7 @@ impl<N: Network> Primary<N> {
             signed_proposals: Default::default(),
             handles: Default::default(),
             propose_lock: Default::default(),
+            dev,
         })
     }
 
@@ -133,6 +136,7 @@ impl<N: Network> Primary<N> {
         bft_sender: Option<BFTSender<N>>,
         primary_sender: PrimarySender<N>,
         primary_receiver: PrimaryReceiver<N>,
+        dev: Option<u16>,
     ) -> Result<()> {
         info!("Starting the primary instance of the memory pool...");
 
@@ -175,8 +179,8 @@ impl<N: Network> Primary<N> {
         // Next, initialize the gateway.
         self.gateway.run(primary_sender, worker_senders, Some(sync_sender)).await;
         // Lastly, start the primary handlers.
-        // Note: This ensures the primary does not start communicating before syncing is complete.
-        self.start_handlers(primary_receiver);
+        // Note: This ensure the primary does not start communicating before syncing is complete.
+        self.start_handlers(primary_receiver, dev);
 
         Ok(())
     }
@@ -467,7 +471,7 @@ impl<N: Network> Primary<N> {
         let proposal =
             Proposal::new(self.ledger.get_previous_committee_for_round(round)?, batch_header.clone(), transmissions)?;
         // Broadcast the batch to all validators for signing.
-        self.gateway.broadcast(Event::BatchPropose(batch_header.into()));
+        self.gateway.broadcast(Event::BatchPropose(batch_header.clone().into()));
         // Set the proposed batch.
         *self.proposed_batch.write() = Some(proposal);
         Ok(())
@@ -801,7 +805,7 @@ impl<N: Network> Primary<N> {
 
 impl<N: Network> Primary<N> {
     /// Starts the primary handlers.
-    fn start_handlers(&self, primary_receiver: PrimaryReceiver<N>) {
+    fn start_handlers(&self, primary_receiver: PrimaryReceiver<N>, dev: Option<u16>) {
         let PrimaryReceiver {
             mut rx_batch_propose,
             mut rx_batch_signature,
@@ -811,7 +815,7 @@ impl<N: Network> Primary<N> {
             mut rx_unconfirmed_transaction,
         } = primary_receiver;
 
-        // Start the primary ping.
+        // Start the primary ping. Broadcasting certificates.
         if self.sync.is_gateway_mode() {
             let self_ = self.clone();
             self.spawn(async move {
@@ -884,8 +888,11 @@ impl<N: Network> Primary<N> {
                         primary_certificate,
                         batch_certificates,
                     ));
-                    // Broadcast the event.
-                    self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
+                    if let Some(dev) = dev {
+                        if dev != 1 {
+                            self_.gateway.broadcast(Event::PrimaryPing(primary_ping));
+                        }
+                    }
                 }
             });
         }
@@ -1206,8 +1213,36 @@ impl<N: Network> Primary<N> {
                 return Err(e);
             };
         }
-        // Broadcast the certified batch to all validators.
-        self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
+        let connected_peers = self.gateway.connected_peers.read().clone();
+        let is_leader = committee.get_leader(certificate.round())? == self.gateway.account().address();
+        if is_leader && certificate.round() > *self.sync.last_leader_round.read() {
+            *self.sync.last_leader_round.write() = certificate.round();
+        }
+        let last_leader_round = *self.sync.last_leader_round.read();
+        let retired_from_leadership = last_leader_round == 0 || (certificate.round() > last_leader_round + 2);
+        for peer in connected_peers {
+            let peer_id = peer.port().to_string().chars().last().unwrap();
+            let certificate = certificate.clone();
+            let self_ = self.clone();
+            match (self.dev, retired_from_leadership, is_leader, peer_id) {
+                (Some(1), _, true, '0') => { // If Validator 1 is the leader, they send to validator 0
+                    tokio::spawn(async move {
+                        self_.gateway.send(peer, Event::BatchCertified(certificate.into())).await;
+                    });
+                },
+                (Some(1), false, _, _) => { // If Validator 1 was recently a leader, withhold certs
+                    info!("\n\nSKIPPING SENDING CERTIFIED BATCH FOR ROUND {} and peer {}\n\n", certificate.round(), peer_id);
+                },
+                (Some(1), true, _, '3') => { // Validator 1 still withholds from validator 3 afterwards
+                    info!("\n\nSKIPPING SENDING CERTIFIED BATCH FOR ROUND {} and peer {}\n\n", certificate.round(), peer_id);
+                },
+                _ => {
+                    tokio::spawn(async move {
+                        self_.gateway.send(peer, Event::BatchCertified(certificate.into())).await;
+                    });
+                }
+            }
+        }
         // Log the certified batch.
         let num_transmissions = certificate.transmission_ids().len();
         let round = certificate.round();
