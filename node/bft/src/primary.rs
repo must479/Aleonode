@@ -1358,8 +1358,6 @@ impl<N: Network> Primary<N> {
 
         // If our primary is behind shedule, update our committee to the batch round.
         if is_behind_schedule {
-        // If our primary is far behind the peer, update our committee to the batch round.
-        error!("is_behind_schedule: {}, is_peer_far_in_future: {}", is_behind_schedule, is_peer_far_in_future);
             // If the batch round is greater than the current committee round, update the committee.
             self.try_increment_to_the_next_round(batch_round).await?;
         // If our peer is far ahead, check if a quorum of peers is ahead and consider updating our committee.
@@ -1371,6 +1369,7 @@ impl<N: Network> Primary<N> {
             let is_quorum_far_in_future = round_with_quorum > self.current_round() + self.storage.max_gc_rounds();
             // If our primary is far behind a quorum of peers, update our committee to the round_with_quorum.
             if is_quorum_far_in_future {
+                error!("quorum in far future, advancing to round {}", round_with_quorum);
                 self.try_increment_to_the_next_round(round_with_quorum).await?;
             }
         }
