@@ -173,6 +173,18 @@ impl<N: Network> Worker<N> {
         {
             return Some(transmission.clone());
         }
+        // Check if the transmission ID exists in ledger.
+        match transmission_id {
+            TransmissionID::Solution(_) => {
+                debug!("skipping getting a solution transmission from the ledger for now.");
+            }
+            TransmissionID::Transaction(transaction_id) => {
+                if let Ok(transaction) = self.ledger.get_unconfirmed_transaction(transaction_id) {
+                    return Some(Transmission::Transaction(Data::Object(transaction)));
+                }
+            }
+            TransmissionID::Ratification => {}
+        }
         None
     }
 
