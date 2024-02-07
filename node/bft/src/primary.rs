@@ -437,8 +437,6 @@ impl<N: Network> Primary<N> {
         ensure!(round > 0, "Round 0 cannot have transaction batches");
         if *lock_guard == round {
             warn!("Primary is safely skipping a batch proposal - round {round} already proposed");
-            // Broadcast the batch again to all validators for signing.
-            self.gateway.broadcast(Event::BatchPropose(self.proposed_batch.read().as_ref().unwrap().batch_header().clone().into()));
             return Ok(());
         }
 
