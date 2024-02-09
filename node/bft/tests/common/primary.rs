@@ -389,5 +389,5 @@ fn genesis_ledger(
         })
         .clone();
     // Initialize the ledger with the genesis block.
-    CurrentLedger::load(block, None).unwrap()
+    CurrentLedger::load(block, None.into()).unwrap()
 }
