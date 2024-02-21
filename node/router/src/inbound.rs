@@ -47,9 +47,9 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
             None => bail!("Unable to resolve the (ambiguous) peer address '{peer_addr}'"),
         };
 
-        // Drop the peer, if they have sent more than 1000 messages in the last 5 seconds.
+        // Drop the peer, if they have sent more than 5000 messages in the last 5 seconds.
         let num_messages = self.router().cache.insert_inbound_message(peer_ip, 5);
-        if num_messages >= 1000 {
+        if num_messages >= 5000 {
             bail!("Dropping '{peer_ip}' for spamming messages (num_messages = {num_messages})")
         }
 
@@ -152,7 +152,9 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
                 }
 
                 // Process the block response.
-                match self.block_response(peer_ip, blocks.0) {
+                let node = self.clone();
+                // TODO: this might be an overkill and only be needed for the validator.
+                match tokio::task::spawn_blocking(move || node.block_response(peer_ip, blocks.0)).await? {
                     true => Ok(()),
                     false => bail!("Peer '{peer_ip}' sent an invalid block response"),
                 }
@@ -220,7 +222,8 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
                     self.router().cache.insert_inbound_solution(peer_ip, message.puzzle_commitment).is_some();
                 // Determine whether to propagate the solution.
                 if seen_before {
-                    bail!("Skipping 'UnconfirmedSolution' from '{peer_ip}'")
+                    trace!("Skipping 'UnconfirmedSolution' from '{peer_ip}'");
+                    return Ok(());
                 }
                 // Perform the deferred non-blocking deserialization of the solution.
                 let solution = match message.solution.deserialize().await {
@@ -245,7 +248,8 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
                     self.router().cache.insert_inbound_transaction(peer_ip, message.transaction_id).is_some();
                 // Determine whether to propagate the transaction.
                 if seen_before {
-                    bail!("Skipping 'UnconfirmedTransaction' from '{peer_ip}'")
+                    trace!("Skipping 'UnconfirmedTransaction' from '{peer_ip}'");
+                    return Ok(());
                 }
                 // Perform the deferred non-blocking deserialization of the transaction.
                 let transaction = match message.transaction.deserialize().await {
@@ -291,10 +295,17 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
 
     /// Handles a `PeerRequest` message.
     fn peer_request(&self, peer_ip: SocketAddr) -> bool {
-        // Retrieve the connected peers.
-        let peers = self.router().connected_peers();
+        // Retrieve the connected validators.
+        let peers = self.router().connected_validators();
         // Send a `PeerResponse` message to the peer.
         self.send(peer_ip, Message::PeerResponse(PeerResponse { peers }));
+
+        if let Some(peer) = self.router().get_connected_peer(&peer_ip) {
+            if peer.is_prover() {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -331,6 +342,11 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
             }
         }
 
+        // Retrieve the connected validators.
+        let peers = self.router().connected_validators();
+        // Send a `PeerResponse` message to the peer.
+        self.send(peer_ip, Message::PeerResponse(PeerResponse { peers }));
+
         // Update the connected peer.
         if let Err(error) = self.router().update_connected_peer(peer_ip, message.node_type, |peer: &mut Peer<N>| {
             // Update the version of the peer.
@@ -342,6 +358,13 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
         }) {
             warn!("[Ping] {error}");
             return false;
+        }
+
+        if let Some(peer) = self.router().get_connected_peer(&peer_ip) {
+            if peer.is_prover() {
+                // Flip a coin and return true or false.
+                return rand::random();
+            }
         }
 
         // TODO (howardwu): For this case, if your canon height is not within NUM_RECENTS of the beacon,

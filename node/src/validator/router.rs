@@ -53,9 +53,13 @@ impl<N: Network, C: ConsensusStorage<N>> Handshake for Validator<N, C> {
         let (peer_ip, mut framed) = self.router.handshake(peer_addr, stream, conn_side, genesis_header).await?;
 
         // Retrieve the block locators.
-        let block_locators = match crate::helpers::get_block_locators(&self.ledger) {
-            Ok(block_locators) => Some(block_locators),
-            Err(e) => {
+        let ledger = self.ledger.clone();
+        let block_locators = match tokio::task::spawn_blocking(move || crate::helpers::get_block_locators(&ledger))
+            .await
+            .map_err(|e| e.into())
+        {
+            Ok(Ok(block_locators)) => Some(block_locators),
+            Ok(Err(e)) | Err(e) => {
                 error!("Failed to get block locators: {e}");
                 return Err(error(format!("Failed to get block locators: {e}")));
             }
@@ -123,7 +127,7 @@ impl<N: Network, C: ConsensusStorage<N>> Routing<N> for Validator<N, C> {}
 
 impl<N: Network, C: ConsensusStorage<N>> Heartbeat<N> for Validator<N, C> {
     /// The maximum number of peers permitted to maintain connections with.
-    const MAXIMUM_NUMBER_OF_PEERS: usize = 1_000;
+    const MAXIMUM_NUMBER_OF_PEERS: usize = 2_000;
 }
 
 impl<N: Network, C: ConsensusStorage<N>> Outbound<N> for Validator<N, C> {
@@ -218,7 +222,10 @@ impl<N: Network, C: ConsensusStorage<N>> Inbound<N> for Validator<N, C> {
         solution: ProverSolution<N>,
     ) -> bool {
         // Add the unconfirmed solution to the memory pool.
-        if let Err(error) = self.consensus.add_unconfirmed_solution(&solution) {
+        let validator = self.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || validator.consensus.add_unconfirmed_solution(&solution)).await
+        {
             trace!("[UnconfirmedSolution] {error}");
             return true; // Maintain the connection.
         }
